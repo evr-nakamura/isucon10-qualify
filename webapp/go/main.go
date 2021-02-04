@@ -21,14 +21,16 @@ import (
 
 	_ "net/http/pprof"
 	"regexp"
-	"time"
+	// "time"
 )
 
 const Limit = 20
 const NazotteLimit = 50
 
 var db *sqlx.DB
+var dbEstate *sqlx.DB
 var mySQLConnectionData *MySQLConnectionEnv
+var mySQLEstateConnectionData *MySQLConnectionEnv
 var chairSearchCondition ChairSearchCondition
 var estateSearchCondition EstateSearchCondition
 
@@ -206,9 +208,20 @@ func (r *RecordMapper) Err() error {
 	return r.err
 }
 
-func NewMySQLConnectionEnv() *MySQLConnectionEnv {
+func NewMySQLChairConnectionEnv() *MySQLConnectionEnv {
 	return &MySQLConnectionEnv{
-		Host:     getEnv("MYSQL_HOST", "127.0.0.1"),
+		Host:     getEnv("MYSQL_HOST", "192.168.1.14"),
+		// Host:     getEnv("MYSQL_HOST", "127.0.0.1"),
+		Port:     getEnv("MYSQL_PORT", "3306"),
+		User:     getEnv("MYSQL_USER", "isucon"),
+		DBName:   getEnv("MYSQL_DBNAME", "isuumo"),
+		Password: getEnv("MYSQL_PASS", "isucon"),
+	}
+}
+
+func NewMySQLEstateConnectionEnv() *MySQLConnectionEnv {
+	return &MySQLConnectionEnv{
+		Host:     getEnv("MYSQL_HOST", "192.168.1.15"),
 		Port:     getEnv("MYSQL_PORT", "3306"),
 		User:     getEnv("MYSQL_USER", "isucon"),
 		DBName:   getEnv("MYSQL_DBNAME", "isuumo"),
@@ -232,11 +245,11 @@ func (mc *MySQLConnectionEnv) ConnectDB() (*sqlx.DB, error) {
         return nil, err
     }
     // コネクションプールの最大接続数を設定。
-    db.SetMaxIdleConns(100)
+    db.SetMaxIdleConns(10)
     // 接続の最大数を設定。 nに0以下の値を設定で、接続数は無制限。
-    db.SetMaxOpenConns(100)
+    db.SetMaxOpenConns(300)
     // 接続の再利用が可能な時間を設定。dに0以下の値を設定で、ずっと再利用可能。
-    db.SetConnMaxLifetime(100 * time.Second)
+    // db.SetConnMaxLifetime(100 * time.Second)
 
 	return db, nil
 	// return sqlx.Open("mysql", dsn)
@@ -275,7 +288,7 @@ func main() {
 	// Middleware
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
-	e.Use(filter)
+	// e.Use(filter)
 
 	// Initialize
 	e.POST("/initialize", initialize)
@@ -298,14 +311,22 @@ func main() {
 	e.GET("/api/estate/search/condition", getEstateSearchCondition)
 	e.GET("/api/recommended_estate/:id", searchRecommendedEstateWithChair)
 
-	mySQLConnectionData = NewMySQLConnectionEnv()
+	mySQLConnectionData = NewMySQLChairConnectionEnv()
+	mySQLEstateConnectionData = NewMySQLEstateConnectionEnv()
 	
 	db, err = mySQLConnectionData.ConnectDB()
 	if err != nil {
 		e.Logger.Fatalf("DB connection failed : %v", err)
 	}
-	db.SetMaxOpenConns(10)
+	// db.SetMaxOpenConns(10)
+
+	dbEstate, err = mySQLEstateConnectionData.ConnectDB()
+	if err != nil {
+		e.Logger.Fatalf("DB2 connection failed : %v", err)
+	}
+
 	defer db.Close()
+	defer dbEstate.Close()
 
 	// Start server
 	serverPort := fmt.Sprintf(":%v", getEnv("SERVER_PORT", "1323"))
@@ -344,6 +365,22 @@ func initialize(c echo.Context) error {
 			mySQLConnectionData.Password,
 			mySQLConnectionData.Port,
 			mySQLConnectionData.DBName,
+			sqlFile,
+		)
+		if err := exec.Command("bash", "-c", cmdStr).Run(); err != nil {
+			c.Logger().Errorf("Initialize script error : %v", err)
+			return c.NoContent(http.StatusInternalServerError)
+		}
+	}
+
+	for _, p := range paths {
+		sqlFile, _ := filepath.Abs(p)
+		cmdStr := fmt.Sprintf("mysql -h %v -u %v -p%v -P %v %v < %v",
+			mySQLEstateConnectionData.Host,
+			mySQLEstateConnectionData.User,
+			mySQLEstateConnectionData.Password,
+			mySQLEstateConnectionData.Port,
+			mySQLEstateConnectionData.DBName,
 			sqlFile,
 		)
 		if err := exec.Command("bash", "-c", cmdStr).Run(); err != nil {
@@ -406,7 +443,35 @@ func postChair(c echo.Context) error {
 		return c.NoContent(http.StatusInternalServerError)
 	}
 	defer tx.Rollback()
-	for _, row := range records {
+	// for _, row := range records {
+	// 	rm := RecordMapper{Record: row}
+	// 	id := rm.NextInt()
+	// 	name := rm.NextString()
+	// 	description := rm.NextString()
+	// 	thumbnail := rm.NextString()
+	// 	price := rm.NextInt()
+	// 	height := rm.NextInt()
+	// 	width := rm.NextInt()
+	// 	depth := rm.NextInt()
+	// 	color := rm.NextString()
+	// 	features := rm.NextString()
+	// 	kind := rm.NextString()
+	// 	popularity := rm.NextInt()
+	// 	stock := rm.NextInt()
+	// 	if err := rm.Err(); err != nil {
+	// 		c.Logger().Errorf("failed to read record: %v", err)
+	// 		return c.NoContent(http.StatusBadRequest)
+	// 	}
+	// 	_, err := tx.Exec("INSERT INTO chair(id, name, description, thumbnail, price, height, width, depth, color, features, kind, popularity, stock) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", id, name, description, thumbnail, price, height, width, depth, color, features, kind, popularity, stock)
+	// 	if err != nil {
+	// 		c.Logger().Errorf("failed to insert chair: %v", err)
+	// 		return c.NoContent(http.StatusInternalServerError)
+	// 	}
+	// }
+
+	queryInsert := `INSERT INTO chair(id, name, description, thumbnail, price, height, width, depth, color, features, kind, popularity, stock) VALUES `
+	rowlen := len(records)
+	for i, row := range records {
 		rm := RecordMapper{Record: row}
 		id := rm.NextInt()
 		name := rm.NextString()
@@ -425,12 +490,16 @@ func postChair(c echo.Context) error {
 			c.Logger().Errorf("failed to read record: %v", err)
 			return c.NoContent(http.StatusBadRequest)
 		}
-		_, err := tx.Exec("INSERT INTO chair(id, name, description, thumbnail, price, height, width, depth, color, features, kind, popularity, stock) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", id, name, description, thumbnail, price, height, width, depth, color, features, kind, popularity, stock)
-		if err != nil {
-			c.Logger().Errorf("failed to insert chair: %v", err)
-			return c.NoContent(http.StatusInternalServerError)
+		queryInsert += fmt.Sprintf(`(%d,"%s","%s","%s","%d",%d,%d,%d,"%s","%s","%s",%d,%d)`, id, name, description, thumbnail, price, height, width, depth, color, features, kind, popularity, stock)
+		if rowlen-1 != i {
+			queryInsert += ","
 		}
 	}
+	if _, err := tx.Exec(queryInsert); err != nil {
+		c.Logger().Errorf("failed to insert chair: %v", err)
+		return c.NoContent(http.StatusInternalServerError)
+	}
+	
 	if err := tx.Commit(); err != nil {
 		c.Logger().Errorf("failed to commit tx: %v", err)
 		return c.NoContent(http.StatusInternalServerError)
@@ -602,34 +671,48 @@ func buyChair(c echo.Context) error {
 		return c.NoContent(http.StatusBadRequest)
 	}
 
-	tx, err := db.Beginx()
-	if err != nil {
-		c.Echo().Logger.Errorf("failed to create transaction : %v", err)
-		return c.NoContent(http.StatusInternalServerError)
-	}
-	defer tx.Rollback()
+	// tx, err := db.Beginx()
+	// if err != nil {
+	// 	c.Echo().Logger.Errorf("failed to create transaction : %v", err)
+	// 	return c.NoContent(http.StatusInternalServerError)
+	// }
+	// defer tx.Rollback()
 
-	var chair Chair
-	err = tx.QueryRowx("SELECT id, name, description, thumbnail, price, height, width, depth, color, features, kind, popularity, stock FROM chair WHERE id = ? AND stock > 0 FOR UPDATE", id).StructScan(&chair)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			c.Echo().Logger.Infof("buyChair chair id \"%v\" not found", id)
-			return c.NoContent(http.StatusNotFound)
-		}
-		c.Echo().Logger.Errorf("DB Execution Error: on getting a chair by id : %v", err)
-		return c.NoContent(http.StatusInternalServerError)
-	}
+	// var chair Chair
+	// err = tx.QueryRowx("SELECT id, name, description, thumbnail, price, height, width, depth, color, features, kind, popularity, stock FROM chair WHERE id = ? AND stock > 0 FOR UPDATE", id).StructScan(&chair)
+	// if err != nil {
+	// 	if err == sql.ErrNoRows {
+	// 		c.Echo().Logger.Infof("buyChair chair id \"%v\" not found", id)
+	// 		return c.NoContent(http.StatusNotFound)
+	// 	}
+	// 	c.Echo().Logger.Errorf("DB Execution Error: on getting a chair by id : %v", err)
+	// 	return c.NoContent(http.StatusInternalServerError)
+	// }
 
-	_, err = tx.Exec("UPDATE chair SET stock = stock - 1 WHERE id = ?", id)
+	// _, err = tx.Exec("UPDATE chair SET stock = stock - 1 WHERE id = ?", id)
+	// if err != nil {
+	// 	c.Echo().Logger.Errorf("chair stock update failed : %v", err)
+	// 	return c.NoContent(http.StatusInternalServerError)
+	// }
+
+	// err = tx.Commit()
+	// if err != nil {
+	// 	c.Echo().Logger.Errorf("transaction commit error : %v", err)
+	// 	return c.NoContent(http.StatusInternalServerError)
+	// }
+	
+
+	results, err := db.Exec("UPDATE chair SET stock = stock - 1 WHERE id = ? AND stock > 0", id)
 	if err != nil {
 		c.Echo().Logger.Errorf("chair stock update failed : %v", err)
 		return c.NoContent(http.StatusInternalServerError)
 	}
-
-	err = tx.Commit()
-	if err != nil {
-		c.Echo().Logger.Errorf("transaction commit error : %v", err)
+	if affectedRows, err := results.RowsAffected(); err != nil {
+		c.Echo().Logger.Errorf("chair stock update failed : %v", err)
 		return c.NoContent(http.StatusInternalServerError)
+	} else if affectedRows == 0 {
+		c.Echo().Logger.Infof("buyChair chair id \"%v\" not found", id)
+		return c.NoContent(http.StatusNotFound)
 	}
 
 	c_chairs = map[string][]Chair{}
@@ -665,7 +748,7 @@ func getEstateDetail(c echo.Context) error {
 	}
 
 	var estate Estate
-	err = db.Get(&estate, "SELECT id, name, description, thumbnail, address, latitude, longitude, rent, door_height, door_width, features, popularity FROM estate WHERE id = ?", id)
+	err = dbEstate.Get(&estate, "SELECT id, name, description, thumbnail, address, latitude, longitude, rent, door_height, door_width, features, popularity FROM estate WHERE id = ?", id)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.Echo().Logger.Infof("getEstateDetail estate id %v not found", id)
@@ -709,13 +792,40 @@ func postEstate(c echo.Context) error {
 		return c.NoContent(http.StatusInternalServerError)
 	}
 
-	tx, err := db.Begin()
+	tx, err := dbEstate.Begin()
 	if err != nil {
 		c.Logger().Errorf("failed to begin tx: %v", err)
 		return c.NoContent(http.StatusInternalServerError)
 	}
 	defer tx.Rollback()
-	for _, row := range records {
+	// for _, row := range records {
+	// 	rm := RecordMapper{Record: row}
+	// 	id := rm.NextInt()
+	// 	name := rm.NextString()
+	// 	description := rm.NextString()
+	// 	thumbnail := rm.NextString()
+	// 	address := rm.NextString()
+	// 	latitude := rm.NextFloat()
+	// 	longitude := rm.NextFloat()
+	// 	rent := rm.NextInt()
+	// 	doorHeight := rm.NextInt()
+	// 	doorWidth := rm.NextInt()
+	// 	features := rm.NextString()
+	// 	popularity := rm.NextInt()
+	// 	if err := rm.Err(); err != nil {
+	// 		c.Logger().Errorf("failed to read record: %v", err)
+	// 		return c.NoContent(http.StatusBadRequest)
+	// 	}
+	// 	_, err := tx.Exec("INSERT INTO estate(id, name, description, thumbnail, address, latitude, longitude, rent, door_height, door_width, features, popularity) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", id, name, description, thumbnail, address, latitude, longitude, rent, doorHeight, doorWidth, features, popularity)
+	// 	if err != nil {
+	// 		c.Logger().Errorf("failed to insert estate: %v", err)
+	// 		return c.NoContent(http.StatusInternalServerError)
+	// 	}
+	// }
+
+	queryInsert := `INSERT INTO estate (id, name, description, thumbnail, address, latitude, longitude, rent, door_height, door_width, features, popularity) VALUES `
+	rowlen := len(records)
+	for i, row := range records {
 		rm := RecordMapper{Record: row}
 		id := rm.NextInt()
 		name := rm.NextString()
@@ -733,18 +843,22 @@ func postEstate(c echo.Context) error {
 			c.Logger().Errorf("failed to read record: %v", err)
 			return c.NoContent(http.StatusBadRequest)
 		}
-		_, err := tx.Exec("INSERT INTO estate(id, name, description, thumbnail, address, latitude, longitude, rent, door_height, door_width, features, popularity) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", id, name, description, thumbnail, address, latitude, longitude, rent, doorHeight, doorWidth, features, popularity)
-		if err != nil {
-			c.Logger().Errorf("failed to insert estate: %v", err)
-			return c.NoContent(http.StatusInternalServerError)
+		queryInsert += fmt.Sprintf(`(%d,"%s","%s","%s","%s",%f,%f,%d,%d,%d,"%s",%d)`, id, name, description, thumbnail, address, latitude, longitude, rent, doorHeight, doorWidth, features, popularity)
+		if rowlen-1 != i {
+			queryInsert += ","
 		}
 	}
+	if _, err := tx.Exec(queryInsert); err != nil {
+		c.Logger().Errorf("failed to insert estate: %v", err)
+		return c.NoContent(http.StatusInternalServerError)
+	}
+	
 	if err := tx.Commit(); err != nil {
 		c.Logger().Errorf("failed to commit tx: %v", err)
 		return c.NoContent(http.StatusInternalServerError)
 	}
 	c_estate = map[string][]Estate{}
-
+	
 	return c.NoContent(http.StatusCreated)
 }
 
@@ -839,7 +953,7 @@ func searchEstates(c echo.Context) error {
 	limitOffset := " ORDER BY popularity_desc, id LIMIT ? OFFSET ?"
 
 	// var res EstateSearchResponse
-	err = db.Get(&res.Count, countQuery+searchCondition, params...)
+	err = dbEstate.Get(&res.Count, countQuery+searchCondition, params...)
 	if err != nil {
 		c.Logger().Errorf("searchEstates DB execution error : %v", err)
 		return c.NoContent(http.StatusInternalServerError)
@@ -847,7 +961,7 @@ func searchEstates(c echo.Context) error {
 
 	estates := []Estate{}
 	params = append(params, perPage, page*perPage)
-	err = db.Select(&estates, searchQuery+searchCondition+limitOffset, params...)
+	err = dbEstate.Select(&estates, searchQuery+searchCondition+limitOffset, params...)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return c.JSON(http.StatusOK, EstateSearchResponse{Count: 0, Estates: []Estate{}})
@@ -866,7 +980,7 @@ func searchEstates(c echo.Context) error {
 func getLowPricedEstate(c echo.Context) error {
 	estates := make([]Estate, 0, Limit)
 	query := `SELECT id, name, description, thumbnail, address, latitude, longitude, rent, door_height, door_width, features, popularity FROM estate ORDER BY rent ASC, id ASC LIMIT ?`
-	err := db.Select(&estates, query, Limit)
+	err := dbEstate.Select(&estates, query, Limit)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.Logger().Error("getLowPricedEstate not found")
@@ -888,7 +1002,7 @@ func searchRecommendedEstateWithChair(c echo.Context) error {
 
 	chair := Chair{}
 	query := `SELECT id, name, description, thumbnail, price, height, width, depth, color, features, kind, popularity, stock FROM chair WHERE id = ?`
-	err = db.Get(&chair, query, id)
+	err = dbEstate.Get(&chair, query, id)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.Logger().Infof("Requested chair id \"%v\" not found", id)
@@ -903,7 +1017,7 @@ func searchRecommendedEstateWithChair(c echo.Context) error {
 	h := chair.Height
 	d := chair.Depth
 	query = `SELECT id, name, description, thumbnail, address, latitude, longitude, rent, door_height, door_width, features, popularity FROM estate WHERE (door_width >= ? AND door_height >= ?) OR (door_width >= ? AND door_height >= ?) OR (door_width >= ? AND door_height >= ?) OR (door_width >= ? AND door_height >= ?) OR (door_width >= ? AND door_height >= ?) OR (door_width >= ? AND door_height >= ?) ORDER BY popularity_desc, id LIMIT ?`
-	err = db.Select(&estates, query, w, h, w, d, h, w, h, d, d, w, d, h, Limit)
+	err = dbEstate.Select(&estates, query, w, h, w, d, h, w, h, d, d, w, d, h, Limit)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return c.JSON(http.StatusOK, EstateListResponse{[]Estate{}})
@@ -934,7 +1048,7 @@ func searchEstateNazotte(c echo.Context) error {
 
 	var result []Estate
 	query := fmt.Sprintf("SELECT id, name, description, thumbnail, address, latitude, longitude, rent, door_height, door_width, features, popularity FROM estate WHERE ST_Contains(ST_PolygonFromText(%s), g) ORDER BY popularity_desc, id LIMIT ?", coordinates.coordinatesToText())
-	err = db.Select(&result, query, NazotteLimit)
+	err = dbEstate.Select(&result, query, NazotteLimit)
 	if err == sql.ErrNoRows {
 		c.Echo().Logger.Infof("select * from estate where latitude ...", err)
 		return c.JSON(http.StatusOK, EstateSearchResponse{Count: 0, Estates: []Estate{}})
@@ -998,7 +1112,7 @@ func postEstateRequestDocument(c echo.Context) error {
 
 	estate := Estate{}
 	query := `SELECT id, name, description, thumbnail, address, latitude, longitude, rent, door_height, door_width, features, popularity FROM estate WHERE id = ?`
-	err = db.Get(&estate, query, id)
+	err = dbEstate.Get(&estate, query, id)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return c.NoContent(http.StatusNotFound)
